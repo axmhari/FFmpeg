@@ -105,6 +105,9 @@ struct MpegTSContext {
     /** compute exact PCR for each transport stream packet   */
     int mpeg2ts_compute_pcr;
 
+    int64_t initial_ts; /**< save the first time stamp       */
+    int64_t ts_mask;    /**< mask for the time stamp         */
+
     int64_t cur_pcr;    /**< used to estimate the exact PCR  */
     int pcr_incr;       /**< used to estimate the exact PCR  */
 
@@ -719,6 +722,7 @@ static uint64_t get_bits64(GetBitContext *gb, int bits)
 static int read_sl_header(PESContext *pes, SLConfigDescr *sl, const uint8_t *buf, int buf_size)
 {
     GetBitContext gb;
+    MpegTSContext *ts = pes->ts;
     int au_start_flag = 0, au_end_flag = 0, ocr_flag = 0, idle_flag = 0;
     int padding_flag = 0, padding_bits = 0, inst_bitrate_flag = 0;
     int dts_flag = -1, cts_flag = -1;
@@ -772,9 +776,9 @@ static int read_sl_header(PESContext *pes, SLConfigDescr *sl, const uint8_t *buf
     }
 
     if (dts != AV_NOPTS_VALUE)
-        pes->dts = dts;
+        pes->dts = (dts - ts->initial_ts) & ts->ts_mask;
     if (cts != AV_NOPTS_VALUE)
-        pes->pts = cts;
+        pes->pts = (cts - ts->initial_ts) & ts->ts_mask;
 
     if (sl->timestamp_len && sl->timestamp_res)
         avpriv_set_pts_info(pes->st, sl->timestamp_len, 1, sl->timestamp_res);
@@ -916,6 +920,8 @@ static int mpegts_push_data(MpegTSFilter *filter,
                     pes->dts = ff_parse_pes_pts(r);
                     r += 5;
                 }
+                pes->dts = (pes->dts - ts->initial_ts) & ts->ts_mask;
+                pes->pts = (pes->pts - ts->initial_ts) & ts->ts_mask;
                 pes->extended_stream_id = -1;
                 if (flags & 0x01) { /* PES extension */
                     pes_ext = *r++;
@@ -1680,6 +1686,10 @@ static void sdt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
     }
 }
 
+
+/* get PCR from TS header */
+static int parse_pcr(int64_t *ppcr_high, int *ppcr_low, const uint8_t *packet);
+
 /* handle one TS packet */
 static int handle_packet(MpegTSContext *ts, const uint8_t *packet)
 {
@@ -1728,6 +1738,14 @@ static int handle_packet(MpegTSContext *ts, const uint8_t *packet)
             PESContext *pc = tss->u.pes_filter.opaque;
             pc->flags |= AV_PKT_FLAG_CORRUPT;
         }
+    }
+
+    /* fill initial PCR, which is contained in the adaption field */
+    if (has_adaptation && ts->initial_ts == AV_NOPTS_VALUE) {
+        int64_t timestamp;
+        int pcr_l;
+        if (parse_pcr(&timestamp, &pcr_l, packet) == 0)
+            ts->initial_ts = timestamp;
     }
 
     if (!has_payload)
@@ -1947,6 +1965,8 @@ static int mpegts_read_header(AVFormatContext *s)
     }
     ts->stream = s;
     ts->auto_guess = 0;
+    ts->ts_mask = (1LL << 33) - 1;
+    ts->initial_ts = AV_NOPTS_VALUE;
 
     if (s->iformat == &ff_mpegts_demuxer) {
         /* normal demux */
@@ -2134,6 +2154,7 @@ static av_unused int64_t mpegts_get_pcr(AVFormatContext *s, int stream_index,
         }
         if ((pcr_pid < 0 || (AV_RB16(buf + 1) & 0x1fff) == pcr_pid) &&
             parse_pcr(&timestamp, &pcr_l, buf) == 0) {
+            timestamp = (timestamp - ts->initial_ts) & ts->ts_mask;
             *ppos = pos;
             return timestamp;
         }
