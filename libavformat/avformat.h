@@ -847,6 +847,11 @@ typedef struct AVStream {
      */
     int64_t mux_ts_offset;
 
+    /**
+     * internal data to check for wrapping of the time stamp
+     */
+    int64_t pts_wrap_reference;
+
 } AVStream;
 
 #define AV_PROGRAM_RUNNING 1
@@ -878,6 +883,8 @@ typedef struct AVProgram {
      */
     int64_t start_time;
     int64_t end_time;
+
+    int64_t pts_wrap_reference;    ///< reference dts for wrap detection
 } AVProgram;
 
 #define AVFMTCTX_NOHEADER      0x0001 /**< signal that no header is present
