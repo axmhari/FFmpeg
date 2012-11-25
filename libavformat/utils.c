@@ -87,13 +87,15 @@ static int is_relative(int64_t ts) {
  */
 static int64_t wrap_timestamp(AVStream *st, int64_t timestamp)
 {
-    if (st->pts_wrap_bits != 64 && st->pts_wrap_reference != AV_NOPTS_VALUE &&
+#ifndef NO_TIMESTAMP_WRAP
+    if (st->pts_wrap_bits < 64 && st->pts_wrap_reference != AV_NOPTS_VALUE &&
         timestamp != AV_NOPTS_VALUE) {
         if (st->pts_wrap_add_offset && timestamp < st->pts_wrap_reference)
             return timestamp + (1LL<<st->pts_wrap_bits);
         else if (!st->pts_wrap_add_offset && timestamp >= st->pts_wrap_reference)
             return timestamp - (1LL<<st->pts_wrap_bits);
     }
+#endif
     return timestamp;
 }
 
@@ -1028,7 +1030,6 @@ static void update_initial_timestamps(AVFormatContext *s, int stream_index,
 
     if (st->start_time == AV_NOPTS_VALUE)
         st->start_time = pts;
-    av_log(s, AV_LOG_INFO, "st->start_time stream %d, %lld\n", stream_index, st->start_time);
 }
 
 static void update_initial_durations(AVFormatContext *s, AVStream *st,
