@@ -848,9 +848,18 @@ typedef struct AVStream {
     int64_t mux_ts_offset;
 
     /**
-     * internal data to check for wrapping of the time stamp
+     * Internal data to check for wrapping of the time stamp
      */
     int64_t pts_wrap_reference;
+
+    /**
+     * Add or subtract the offset for wrap correction
+     *
+     * If the first time stamp is near the wrap point, the wrap offset
+     * will be subtracted, which will create negative time stamps.
+     * Otherwise the offset will be added.
+     */
+    int pts_wrap_add_offset;
 
 } AVStream;
 
@@ -885,6 +894,7 @@ typedef struct AVProgram {
     int64_t end_time;
 
     int64_t pts_wrap_reference;    ///< reference dts for wrap detection
+    int pts_wrap_add_offset;       ///< add or subtract the offset for wrap correction
 } AVProgram;
 
 #define AVFMTCTX_NOHEADER      0x0001 /**< signal that no header is present

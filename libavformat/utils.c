@@ -88,8 +88,12 @@ static int is_relative(int64_t ts) {
 static int64_t wrap_timestamp(AVStream *st, int64_t timestamp)
 {
     if (st->pts_wrap_bits != 64 && st->pts_wrap_reference != AV_NOPTS_VALUE &&
-        timestamp != AV_NOPTS_VALUE && timestamp < st->pts_wrap_reference)
-        return timestamp + (1LL<<st->pts_wrap_bits);
+        timestamp != AV_NOPTS_VALUE) {
+        if (st->pts_wrap_add_offset && timestamp < st->pts_wrap_reference)
+            return timestamp + (1LL<<st->pts_wrap_bits);
+        else if (!st->pts_wrap_add_offset && timestamp >= st->pts_wrap_reference)
+            return timestamp - (1LL<<st->pts_wrap_bits);
+    }
     return timestamp;
 }
 
@@ -759,8 +763,10 @@ int ff_read_packet(AVFormatContext *s, AVPacket *pkt)
         }
 
         st= s->streams[pkt->stream_index];
+        av_log(s, AV_LOG_INFO, "stream %d: pts %lld -> ", pkt->stream_index, pkt->pts);
         pkt->dts = wrap_timestamp(st, pkt->dts);
         pkt->pts = wrap_timestamp(st, pkt->pts);
+        av_log(s, AV_LOG_INFO, "%lld\n", pkt->pts);
 
         force_codec_ids(s, st);
 
@@ -910,8 +916,65 @@ static AVPacketList *get_next_pkt(AVFormatContext *s, AVStream *st, AVPacketList
     return NULL;
 }
 
+static int update_wrap_reference(AVFormatContext *s, AVStream *st, int stream_index)
+{
+    if (st->pts_wrap_bits != 64 && st->pts_wrap_reference == AV_NOPTS_VALUE && st->first_dts != AV_NOPTS_VALUE) {
+        int i;
+
+        // reference time stamp should be 60 s before first time stamp
+        int64_t pts_wrap_reference = st->first_dts - av_rescale(60, st->time_base.den, st->time_base.num);
+        // if first time stamp is not more than 1/8 and 60s before the wrap point, subtract rather than add wrap offset
+        int pts_wrap_add_offset = (st->first_dts < (1LL<<st->pts_wrap_bits) - (1LL<<st->pts_wrap_bits-3)) ||
+            (st->first_dts < (1LL<<st->pts_wrap_bits) - av_rescale(60, st->time_base.den, st->time_base.num));
+
+        AVProgram *first_program = av_find_program_from_stream(s, NULL, stream_index);
+
+        if (!first_program) {
+            int default_stream_index = av_find_default_stream_index(s);
+            if (s->streams[default_stream_index]->pts_wrap_reference == AV_NOPTS_VALUE) {
+                for (i=0; i<s->nb_streams; i++) {
+                    s->streams[i]->pts_wrap_reference = pts_wrap_reference;
+                    s->streams[i]->pts_wrap_add_offset = pts_wrap_add_offset;
+                }
+            }
+            else {
+                st->pts_wrap_reference = s->streams[default_stream_index]->pts_wrap_reference;
+                st->pts_wrap_add_offset = s->streams[default_stream_index]->pts_wrap_add_offset;
+            }
+        }
+        else {
+            AVProgram *program = first_program;
+            while (program) {
+                if (program->pts_wrap_reference != AV_NOPTS_VALUE) {
+                    pts_wrap_reference = program->pts_wrap_reference;
+                    pts_wrap_add_offset = program->pts_wrap_add_offset;
+                    break;
+                }
+                program = av_find_program_from_stream(s, program, stream_index);
+            }
+
+            // update every program with differing pts_wrap_reference
+            program = first_program;
+            while(program) {
+                if (program->pts_wrap_reference != pts_wrap_reference) {
+                    for (i=0; i<program->nb_stream_indexes; i++) {
+                        s->streams[program->stream_index[i]]->pts_wrap_reference = pts_wrap_reference;
+                        s->streams[program->stream_index[i]]->pts_wrap_add_offset = pts_wrap_add_offset;
+                    }
+
+                    program->pts_wrap_reference = pts_wrap_reference;
+                    program->pts_wrap_add_offset = pts_wrap_add_offset;
+                }
+                program = av_find_program_from_stream(s, program, stream_index);
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static void update_initial_timestamps(AVFormatContext *s, int stream_index,
-                                      int64_t dts, int64_t pts)
+                                      int64_t dts, int64_t pts, AVPacket *pkt)
 {
     AVStream *st= s->streams[stream_index];
     AVPacketList *pktl= s->parse_queue ? s->parse_queue : s->packet_buffer;
@@ -953,47 +1016,19 @@ static void update_initial_timestamps(AVFormatContext *s, int stream_index,
                 pktl->pkt.dts= pts_buffer[0];
         }
     }
+
+    if (update_wrap_reference(s, st, stream_index) && !st->pts_wrap_add_offset) {
+        // correct first time stamps to negative values
+        st->first_dts = wrap_timestamp(st, st->first_dts);
+        st->cur_dts = wrap_timestamp(st, st->cur_dts);
+        pkt->dts = wrap_timestamp(st, pkt->dts);
+        pkt->pts = wrap_timestamp(st, pkt->pts);
+        pts = wrap_timestamp(st, pts);
+    }
+
     if (st->start_time == AV_NOPTS_VALUE)
         st->start_time = pts;
-
-    if (st->pts_wrap_reference == AV_NOPTS_VALUE) {
-        int i;
-
-        // reference time stamp should be 60 s before first time stamp
-        int64_t pts_wrap_reference = st->first_dts - av_rescale(60, st->time_base.den, st->time_base.num);
-        AVProgram *first_program = av_find_program_from_stream(s, NULL, stream_index);
-        if (!first_program) {
-            int default_stream_index = av_find_default_stream_index(s);
-            if (s->streams[default_stream_index]->pts_wrap_reference == AV_NOPTS_VALUE) {
-                for (i=0; i<s->nb_streams; i++)
-                    s->streams[i]->pts_wrap_reference = pts_wrap_reference;
-            }
-            else
-                st->pts_wrap_reference = s->streams[default_stream_index]->pts_wrap_reference;
-        }
-        else {
-            AVProgram *program = first_program;
-            while (program) {
-                if (program->pts_wrap_reference != AV_NOPTS_VALUE) {
-                    pts_wrap_reference = program->pts_wrap_reference;
-                    break;
-                }
-                program = av_find_program_from_stream(s, program, stream_index);
-            }
-
-            // update every program with differing pts_wrap_reference
-            program = first_program;
-            while(program) {
-                if (program->pts_wrap_reference != pts_wrap_reference)
-                {
-                    for (i=0; i<program->nb_stream_indexes; i++)
-                        s->streams[program->stream_index[i]]->pts_wrap_reference = pts_wrap_reference;
-                    program->pts_wrap_reference = pts_wrap_reference;
-                }
-                program = av_find_program_from_stream(s, program, stream_index);
-            }
-        }
-    }
+    av_log(s, AV_LOG_INFO, "st->start_time stream %d, %lld\n", stream_index, st->start_time);
 }
 
 static void update_initial_durations(AVFormatContext *s, AVStream *st,
@@ -1137,7 +1172,7 @@ static void compute_pkt_fields(AVFormatContext *s, AVStream *st,
             /* PTS = presentation timestamp */
             if (pkt->dts == AV_NOPTS_VALUE)
                 pkt->dts = st->last_IP_pts;
-            update_initial_timestamps(s, pkt->stream_index, pkt->dts, pkt->pts);
+            update_initial_timestamps(s, pkt->stream_index, pkt->dts, pkt->pts, pkt);
             if (pkt->dts == AV_NOPTS_VALUE)
                 pkt->dts = st->cur_dts;
 
@@ -1174,7 +1209,7 @@ static void compute_pkt_fields(AVFormatContext *s, AVStream *st,
             if (pkt->pts == AV_NOPTS_VALUE)
                 pkt->pts = pkt->dts;
             update_initial_timestamps(s, pkt->stream_index, pkt->pts,
-                                      pkt->pts);
+                                      pkt->pts, pkt);
             if (pkt->pts == AV_NOPTS_VALUE)
                 pkt->pts = st->cur_dts;
             pkt->dts = pkt->pts;
@@ -1191,7 +1226,7 @@ static void compute_pkt_fields(AVFormatContext *s, AVStream *st,
             pkt->dts= st->pts_buffer[0];
     }
     if(st->codec->codec_id == AV_CODEC_ID_H264){ // we skipped it above so we try here
-        update_initial_timestamps(s, pkt->stream_index, pkt->dts, pkt->pts); // this should happen on the first packet
+        update_initial_timestamps(s, pkt->stream_index, pkt->dts, pkt->pts, pkt); // this should happen on the first packet
     }
     if(pkt->dts > st->cur_dts)
         st->cur_dts = pkt->dts;
