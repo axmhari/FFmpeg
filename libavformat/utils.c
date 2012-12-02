@@ -765,10 +765,8 @@ int ff_read_packet(AVFormatContext *s, AVPacket *pkt)
         }
 
         st= s->streams[pkt->stream_index];
-        av_log(s, AV_LOG_INFO, "stream %d: pts %lld -> ", pkt->stream_index, pkt->pts);
         pkt->dts = wrap_timestamp(st, pkt->dts);
         pkt->pts = wrap_timestamp(st, pkt->pts);
-        av_log(s, AV_LOG_INFO, "%lld\n", pkt->pts);
 
         force_codec_ids(s, st);
 
