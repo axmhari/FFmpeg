@@ -630,6 +630,13 @@ typedef struct AVIndexEntry {
 #define AV_DISPOSITION_ATTACHED_PIC      0x0400
 
 /**
+ * Options for behavior on timestamp wrap detection.
+ */
+#define AV_PTS_WRAP_IGNORE      0   ///< ignore the wrap
+#define AV_PTS_WRAP_ADD_OFFSET  1   ///< add the format specific offset on wrap detection
+#define AV_PTS_WRAP_SUB_OFFSET  -1  ///< subtract the format specific offset on wrap detection
+
+/**
  * Stream structure.
  * New fields can be added to the end with minor version bumps.
  * Removal, reordering and changes to existing fields require a major
@@ -853,13 +860,16 @@ typedef struct AVStream {
     int64_t pts_wrap_reference;
 
     /**
-     * Add or subtract the offset for wrap correction
+     * Options for behavior, when a wrap is detected.
      *
+     * Defined by AV_PTS_WRAP_ values.
+     *
+     * If correction is enabled, there are two possibilities:
      * If the first time stamp is near the wrap point, the wrap offset
      * will be subtracted, which will create negative time stamps.
      * Otherwise the offset will be added.
      */
-    int pts_wrap_add_offset;
+    int pts_wrap_behavior;
 
 } AVStream;
 
@@ -894,7 +904,7 @@ typedef struct AVProgram {
     int64_t end_time;
 
     int64_t pts_wrap_reference;    ///< reference dts for wrap detection
-    int pts_wrap_add_offset;       ///< add or subtract the offset for wrap correction
+    int pts_wrap_behavior;         ///< behavior on wrap detection
 } AVProgram;
 
 #define AVFMTCTX_NOHEADER      0x0001 /**< signal that no header is present
@@ -1193,6 +1203,13 @@ typedef struct AVFormatContext {
      * New public fields should be added right above.
      *****************************************************************
      */
+
+    /**
+     * Correct single timestamp overflows (default: enabled)
+     * - encoding: unused
+     * - decoding: Set by user via AVOPtions
+     */
+    unsigned int correct_ts_overflow;
 
     /**
      * This buffer is only needed when packets were already buffered but

@@ -73,6 +73,7 @@ static const AVOption options[]={
 {"use_wallclock_as_timestamps", "use wallclock as timestamps", OFFSET(use_wallclock_as_timestamps), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX-1, D},
 {"avoid_negative_ts", "avoid negative timestamps", OFFSET(avoid_negative_ts), AV_OPT_TYPE_INT, {.i64 = -1}, -1, 1, E},
 {"skip_initial_bytes", "skip initial bytes", OFFSET(skip_initial_bytes), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX-1, D},
+{"correct_ts_overflow", "correct single timestamp overflows", OFFSET(correct_ts_overflow), AV_OPT_TYPE_INT, {.i64 = 1}, 0, 1, D},
 {NULL},
 };
 

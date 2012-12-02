@@ -87,15 +87,15 @@ static int is_relative(int64_t ts) {
  */
 static int64_t wrap_timestamp(AVStream *st, int64_t timestamp)
 {
-#ifndef NO_TIMESTAMP_WRAP
-    if (st->pts_wrap_bits < 64 && st->pts_wrap_reference != AV_NOPTS_VALUE &&
-        timestamp != AV_NOPTS_VALUE) {
-        if (st->pts_wrap_add_offset && timestamp < st->pts_wrap_reference)
+    if (st->pts_wrap_behavior != AV_PTS_WRAP_IGNORE && st->pts_wrap_bits < 64 &&
+        st->pts_wrap_reference != AV_NOPTS_VALUE && timestamp != AV_NOPTS_VALUE) {
+        if (st->pts_wrap_behavior == AV_PTS_WRAP_ADD_OFFSET &&
+            timestamp < st->pts_wrap_reference)
             return timestamp + (1LL<<st->pts_wrap_bits);
-        else if (!st->pts_wrap_add_offset && timestamp >= st->pts_wrap_reference)
+        else if (st->pts_wrap_behavior == AV_PTS_WRAP_SUB_OFFSET &&
+            timestamp >= st->pts_wrap_reference)
             return timestamp - (1LL<<st->pts_wrap_bits);
     }
-#endif
     return timestamp;
 }
 
@@ -920,14 +920,16 @@ static AVPacketList *get_next_pkt(AVFormatContext *s, AVStream *st, AVPacketList
 
 static int update_wrap_reference(AVFormatContext *s, AVStream *st, int stream_index)
 {
-    if (st->pts_wrap_bits != 64 && st->pts_wrap_reference == AV_NOPTS_VALUE && st->first_dts != AV_NOPTS_VALUE) {
+    if (s->correct_ts_overflow && st->pts_wrap_bits != 64 &&
+        st->pts_wrap_reference == AV_NOPTS_VALUE && st->first_dts != AV_NOPTS_VALUE) {
         int i;
 
         // reference time stamp should be 60 s before first time stamp
         int64_t pts_wrap_reference = st->first_dts - av_rescale(60, st->time_base.den, st->time_base.num);
         // if first time stamp is not more than 1/8 and 60s before the wrap point, subtract rather than add wrap offset
-        int pts_wrap_add_offset = (st->first_dts < (1LL<<st->pts_wrap_bits) - (1LL<<st->pts_wrap_bits-3)) ||
-            (st->first_dts < (1LL<<st->pts_wrap_bits) - av_rescale(60, st->time_base.den, st->time_base.num));
+        int pts_wrap_behavior = (st->first_dts < (1LL<<st->pts_wrap_bits) - (1LL<<st->pts_wrap_bits-3)) ||
+            (st->first_dts < (1LL<<st->pts_wrap_bits) - av_rescale(60, st->time_base.den, st->time_base.num)) ?
+            AV_PTS_WRAP_ADD_OFFSET : AV_PTS_WRAP_SUB_OFFSET;
 
         AVProgram *first_program = av_find_program_from_stream(s, NULL, stream_index);
 
@@ -936,12 +938,12 @@ static int update_wrap_reference(AVFormatContext *s, AVStream *st, int stream_in
             if (s->streams[default_stream_index]->pts_wrap_reference == AV_NOPTS_VALUE) {
                 for (i=0; i<s->nb_streams; i++) {
                     s->streams[i]->pts_wrap_reference = pts_wrap_reference;
-                    s->streams[i]->pts_wrap_add_offset = pts_wrap_add_offset;
+                    s->streams[i]->pts_wrap_behavior = pts_wrap_behavior;
                 }
             }
             else {
                 st->pts_wrap_reference = s->streams[default_stream_index]->pts_wrap_reference;
-                st->pts_wrap_add_offset = s->streams[default_stream_index]->pts_wrap_add_offset;
+                st->pts_wrap_behavior = s->streams[default_stream_index]->pts_wrap_behavior;
             }
         }
         else {
@@ -949,7 +951,7 @@ static int update_wrap_reference(AVFormatContext *s, AVStream *st, int stream_in
             while (program) {
                 if (program->pts_wrap_reference != AV_NOPTS_VALUE) {
                     pts_wrap_reference = program->pts_wrap_reference;
-                    pts_wrap_add_offset = program->pts_wrap_add_offset;
+                    pts_wrap_behavior = program->pts_wrap_behavior;
                     break;
                 }
                 program = av_find_program_from_stream(s, program, stream_index);
@@ -961,11 +963,11 @@ static int update_wrap_reference(AVFormatContext *s, AVStream *st, int stream_in
                 if (program->pts_wrap_reference != pts_wrap_reference) {
                     for (i=0; i<program->nb_stream_indexes; i++) {
                         s->streams[program->stream_index[i]]->pts_wrap_reference = pts_wrap_reference;
-                        s->streams[program->stream_index[i]]->pts_wrap_add_offset = pts_wrap_add_offset;
+                        s->streams[program->stream_index[i]]->pts_wrap_behavior = pts_wrap_behavior;
                     }
 
                     program->pts_wrap_reference = pts_wrap_reference;
-                    program->pts_wrap_add_offset = pts_wrap_add_offset;
+                    program->pts_wrap_behavior = pts_wrap_behavior;
                 }
                 program = av_find_program_from_stream(s, program, stream_index);
             }
@@ -1019,7 +1021,7 @@ static void update_initial_timestamps(AVFormatContext *s, int stream_index,
         }
     }
 
-    if (update_wrap_reference(s, st, stream_index) && !st->pts_wrap_add_offset) {
+    if (update_wrap_reference(s, st, stream_index) && st->pts_wrap_behavior == AV_PTS_WRAP_SUB_OFFSET) {
         // correct first time stamps to negative values
         st->first_dts = wrap_timestamp(st, st->first_dts);
         st->cur_dts = wrap_timestamp(st, st->cur_dts);
@@ -3284,6 +3286,7 @@ AVStream *avformat_new_stream(AVFormatContext *s, const AVCodec *c)
     st->first_dts = AV_NOPTS_VALUE;
     st->probe_packets = MAX_PROBE_PACKETS;
     st->pts_wrap_reference = AV_NOPTS_VALUE;
+    st->pts_wrap_behavior = AV_PTS_WRAP_IGNORE;
 
     /* default pts setting is MPEG-like */
     avpriv_set_pts_info(st, 33, 1, 90000);
@@ -3324,6 +3327,7 @@ AVProgram *av_new_program(AVFormatContext *ac, int id)
     }
     program->id = id;
     program->pts_wrap_reference = AV_NOPTS_VALUE;
+    program->pts_wrap_behavior = AV_PTS_WRAP_IGNORE;
 
     program->start_time =
     program->end_time   = AV_NOPTS_VALUE;
