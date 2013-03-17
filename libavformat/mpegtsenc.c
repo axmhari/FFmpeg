@@ -84,6 +84,7 @@ typedef struct MpegTSWrite {
 #define MPEGTS_FLAG_AAC_LATM        0x02
     int flags;
     int copyts;
+    int64_t timestamp_offset;
 } MpegTSWrite;
 
 /* a PES packet header is generated every DEFAULT_PES_HEADER_FREQ packets */
@@ -120,6 +121,8 @@ static const AVOption options[] = {
       offsetof(MpegTSWrite, reemit_pat_pmt), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM},
     { "mpegts_copyts", "dont offset dts/pts",
       offsetof(MpegTSWrite, copyts), AV_OPT_TYPE_INT, {.i64=-1}, -1, 1, AV_OPT_FLAG_ENCODING_PARAM},
+    { "timestamp_offset", "Set the timestamp offset in micro seconds (default 0)", 
+      offsetof(MpegTSWrite, timestamp_offset), AV_OPT_TYPE_INT, {.i64=0}, 0, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM},
     { NULL },
 };
 
@@ -643,7 +646,7 @@ static int mpegts_write_header(AVFormatContext *s)
             (TS_PACKET_SIZE * 8 * 1000);
 
         if(ts->copyts < 1)
-            ts->first_pcr = av_rescale(s->max_delay, PCR_TIME_BASE, AV_TIME_BASE);
+            ts->first_pcr = av_rescale(s->max_delay + ts->timestamp_offset, PCR_TIME_BASE, AV_TIME_BASE);
     } else {
         /* Arbitrary values, PAT/PMT will also be written on video key frames */
         ts->sdt_packet_period = 200;
@@ -849,7 +852,11 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
     int afc_len, stuffing_len;
     int64_t pcr = -1; /* avoid warning */
     int64_t delay = av_rescale(s->max_delay, 90000, AV_TIME_BASE);
+    int64_t offset = av_rescale(ts->timestamp_offset, 90000, AV_TIME_BASE);
     int force_pat = st->codec->codec_type == AVMEDIA_TYPE_VIDEO && key && !ts_st->prev_payload_key;
+
+    dts += offset;
+    pts += offset;
 
     is_start = 1;
     while (payload_size > 0) {
